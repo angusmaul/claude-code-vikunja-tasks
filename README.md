@@ -4,7 +4,7 @@ A Claude Code mod (a plugin of function hooks) that puts your [Vikunja](https://
 beside the conversation, so the task you and Claude are working on is in view while you work on it.
 
 - **Lanes at a glance.** Doing, Blocked and To-Do across every project, grouped by project, with
-  priority and assignees. Filter by assignee, project or priority; hide Blocked with a toggle.
+  priority and assignees. Filter by assignee, project, priority or due date (overdue, due in the next seven days); hide Blocked with a toggle.
 - **The session's own task opens by itself.** When a Vikunja MCP call in the session names a task,
   the pane switches to it, and re-reads it every 10 seconds so you see it change as Claude updates it.
 - **Task detail in the pane.** Description and comments, drawn as markdown, without leaving the app.
@@ -68,7 +68,7 @@ Set under `pluginConfigs` in `~/.claude/settings.json`. All are optional.
 
 | Option | What it does |
 |---|---|
-| `webUrl` | Where *Open in Vikunja* points. Must be `https`; empty means no link. |
+| `webUrl` | Where *Open in Vikunja* points (`http` or `https`). Empty means no button. |
 | `folderRoot` | The one directory every task folder lives directly under. Empty turns the folder picker off. |
 | `hiddenProjects` | Text in the title of a top-level project. That project and everything under it is left out of the lists by default; the Project filter brings it back. |
 
@@ -77,6 +77,7 @@ Set under `pluginConfigs` in `~/.claude/settings.json`. All are optional.
 The pane opens when a session starts. `/vikunja` reopens it and refreshes.
 
 - Click a task to read it; **‹ All tasks** (or `b`) goes back.
+- While the pane has the keyboard: `r` refreshes, and on a task `o` opens it in Vikunja.
 - The first click after typing in the prompt gives the pane the keyboard; clicks after that are single.
 - A lane is found by its bucket's name: `Doing`, `Blocked`, and `To-Do` (also `Todo` or `Backlog`).
 
@@ -91,6 +92,8 @@ and creates it if not. A created folder holds one empty `.gitkeep`, because the 
 directory only on the way to writing a file.
 
 ## What it does to your Vikunja
+
+*Open in Vikunja* runs your system's URL opener (`rundll32` on Windows, `xdg-open` or `open` elsewhere) on the configured address.
 
 Reads: projects, kanban buckets, tasks, comments, labels. Writes: creating a `folder: …` label,
 and adding or removing it on a task — and only when you use the folder picker.
