@@ -1,0 +1,174 @@
+import { expect, mock, test } from 'claude-code/testing'
+
+const TASK = {
+  id: 774,
+  identifier: '#244',
+  title: 'Build a dashboard',
+  priority: 4,
+  done: false,
+  project_id: 32,
+  assignees: [{ username: 'claude' }],
+  description: '<p>Hello <strong>there</strong></p><ul><li>one</li></ul>',
+  created: '2026-10-01T10:00:00+10:00',
+  updated: '2026-10-03T14:02:00+10:00',
+  labels: [] as { id: number; title: string }[],
+}
+
+// A Vikunja small enough to answer every path the mod reads.
+const answer = (url: string): unknown => {
+  const path = url.split('/api/v1')[1] ?? ''
+
+  if (path.startsWith('/labels')) {
+    return []
+  }
+
+  if (path.startsWith('/projects?')) {
+    return [
+      { id: 32, title: 'Proxmox', parent_project_id: 0, views: [{ id: 128, view_kind: 'kanban' }] },
+      { id: 13, title: 'Home Improvements/Automation', parent_project_id: 0, views: [] },
+      { id: 14, title: 'Koi Pond', parent_project_id: 13, views: [] },
+    ]
+  }
+
+  if (path.includes('/buckets')) {
+    return [
+      { id: 113, title: 'Doing' },
+      { id: 115, title: 'Blocked' },
+      { id: 112, title: 'To-Do' },
+    ]
+  }
+
+  if (path.startsWith('/tasks?')) {
+    if (path.includes('112')) {
+      return [{ ...TASK, id: 901, identifier: '#9', title: 'Not started yet' }]
+    }
+
+    return path.includes('113') ? [TASK, { ...TASK, id: 900, identifier: '#3', project_id: 14 }] : []
+  }
+
+  if (path.endsWith('/comments')) {
+    return [{ author: { username: 'Tim' }, created: TASK.updated, comment: '<p>Looks good</p>' }]
+  }
+
+  return TASK
+}
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  const options = { webUrl: 'https://tasks.test', folderRoot: 'D:\\', hiddenProjects: 'home improvement' }
+
+  test(`draws the lanes and a task on ${surface}`, { options }, async ($, on) => {
+    mock.env(on, { VIKUNJA_API_TOKEN: 'tk_test', VIKUNJA_URL: 'http://vikunja.test/api/v1' })
+    mock.clock(on, { now: 1_000_000 })
+    const writes: string[] = []
+    const calls: Record<string, unknown>[] = []
+    on('http.fetch', (_, e) => {
+      const method = e.init?.method ?? 'GET'
+
+      if (method !== 'GET') {
+        writes.push(`${method} ${e.url.split('/api/v1')[1]} ${e.init?.body ?? ''}`)
+      }
+
+      const body = method === 'PUT' && e.url.endsWith('/labels') && !e.url.includes('/tasks/') ? { id: 9 } : answer(e.url)
+
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+    })
+    on('session.cwd', () => ({ value: 'D:\\here' }) as never)
+    const made: string[] = []
+    on('fs.list', () => ({
+      value: [
+        { name: 'here', kind: 'dir', size: 0, mtimeMs: 999, isLink: false },
+        // more folders than a Select takes: the picker must still draw
+        ...Array.from({ length: 90 }, (_, n) => ({ name: `dir-${n}`, kind: 'dir', size: 0, mtimeMs: n, isLink: false })),
+        { name: '$RECYCLE.BIN', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+      ],
+    }) as never)
+    on('fs.exists', () => ({ value: false }) as never)
+    on('fs.write', (_, e) => {
+      made.push((e as { path: string }).path)
+
+      return { value: undefined } as never
+    })
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    on('tool.call', (_, e) => {
+      calls.push(e as never)
+
+      return { result: 'ok' } as never
+    })
+    on('command.register', () => ({ value: undefined }) as never)
+    on('ui.open', () => ({ value: { isPlaced: true as const } }))
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('ui.focus', () => ({ value: {} }) as never)
+
+    await $.session.start({ cwd: '.', surface, isInteractive: true })
+
+    const ui = await $.ui.mount({
+      plugin: 'vikunja-tasks',
+      surface,
+      component: 'Pane',
+      requestId: 'vikunja-tasks',
+      props: { id: 'vikunja-tasks', title: 'Vikunja', bodyColumns: 60 } as never,
+      viewport: { columns: 60, rows: 40 },
+    })
+
+    expect(await ui.find({ text: 'DOING' })).toBeDefined()
+    expect(await ui.find({ key: 'open-Doing-774' })).toBeDefined()
+    expect(await ui.find({ key: 'open-To-Do-901' })).toBeDefined()
+
+    // Blocked can be hidden and shown again.
+    expect(await ui.find({ text: 'BLOCKED' })).toBeDefined()
+    await ui.press({ key: 'blocked-hide' })
+    expect(await ui.find({ type: 'Text', text: 'BLOCKED' })).toBeUndefined()
+    await ui.press({ key: 'blocked-show' })
+    expect(await ui.find({ type: 'Text', text: 'BLOCKED' })).toBeDefined()
+
+    // A task under the home-improvement tree is left out until asked for.
+    expect(await ui.find({ key: 'open-Doing-900' })).toBeUndefined()
+    await ui.select({ key: 'filter-project', value: 'everything' })
+    expect(await ui.find({ key: 'open-Doing-900' })).toBeDefined()
+    await ui.press({ key: 'clear-filters' })
+    expect(await ui.find({ key: 'open-Doing-900' })).toBeUndefined()
+
+    await ui.press({ key: 'open-Doing-774' })
+    await ui.drawn()
+    expect(await ui.find({ key: 'back' })).toBeDefined()
+    expect(await ui.find({ type: 'Markdown', text: 'Looks good' })).toBeDefined()
+
+    // Picking a folder labels the task; Start session offers one in it.
+    expect(await ui.find({ type: 'Select', key: 'folder', text: '$RECYCLE' })).toBeUndefined()
+    await ui.select({ key: 'folder', value: 'D:\\here' })
+    expect(writes).toEqual([
+      'PUT /labels {"title":"folder: D:\\\\here","hex_color":"6b8afd"}',
+      'PUT /tasks/774/labels {"label_id":9}',
+    ])
+
+    // A new folder is made under D: and given to the task.
+    await ui.select({ key: 'folder', value: '(other)' })
+    await ui.input({ key: 'folder-path', text: 'bad/name' })
+    expect(made).toEqual([])
+    await ui.input({ key: 'folder-path', text: 'fresh' })
+    expect(made).toEqual(['D:\\fresh\\.gitkeep'])
+    expect(writes.at(-1)).toBe('PUT /tasks/774/labels {"label_id":9}')
+
+    TASK.labels = [{ id: 9, title: 'folder: D:\\elsewhere' }]
+    await ui.press({ key: 'reload-folder' })
+    await ui.press({ key: 'start-session' })
+    expect(calls.at(-1)).toMatchObject({ tool: 'mcp__ccd_session__spawn_task', cwd: 'D:\\elsewhere' })
+    TASK.labels = []
+
+    await ui.press({ key: 'back' })
+    expect(await ui.find({ key: 'refresh' })).toBeDefined()
+
+    // A filter nothing matches empties the lane, and Clear brings it back.
+    await ui.select({ key: 'filter-assignee', value: 'nobody' })
+    expect(await ui.find({ key: 'open-Doing-774' })).toBeUndefined()
+    await ui.press({ key: 'clear-filters' })
+    expect(await ui.find({ key: 'open-Doing-774' })).toBeDefined()
+
+    // A vikunja MCP call naming a task opens it without a press.
+    await $.tool.call({ tool: 'mcp__vikunja__vikunja_tasks', subcommand: 'get', id: 774 } as never)
+    await ui.drawn()
+    expect(await ui.find({ key: 'back' })).toBeDefined()
+    expect(await ui.find({ text: 'THIS SESSION' })).toBeUndefined()
+  })
+}
