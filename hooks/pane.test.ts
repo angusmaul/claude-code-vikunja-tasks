@@ -94,7 +94,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
       return { value: { exitCode: 0, stdout: '', stderr: '' } } as never
     })
-    on('fs.exists', () => ({ value: false }) as never)
+    on('fs.exists', (_, e) => ({ value: (e as { path: string }).path.endsWith('linked') }) as never)
+    on('fs.stat', () => ({ value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: true } }) as never)
     on('fs.write', (_, e) => {
       made.push((e as { path: string }).path)
 
@@ -173,11 +174,20 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.select({ key: 'folder', value: '(other)' })
     await ui.input({ key: 'folder-path', text: 'bad/name' })
     expect(made).toEqual([])
+    // A link under the root is refused: it could lead a session anywhere.
+    await ui.input({ key: 'folder-path', text: 'linked' })
+    expect(made).toEqual([])
+    expect(writes).toHaveLength(2)
+    await ui.select({ key: 'folder', value: '(other)' })
     await ui.input({ key: 'folder-path', text: 'fresh' })
     expect(made).toEqual(['D:\\fresh\\.gitkeep'])
     expect(writes.at(-1)).toBe('PUT /tasks/774/labels {"label_id":9}')
 
-    TASK.labels = [{ id: 9, title: 'folder: D:\\elsewhere' }]
+    // Changing folder puts the new label on before taking the old one off.
+    TASK.labels = [{ id: 7, title: 'folder: D:\\elsewhere' }]
+    await ui.press({ key: 'reload-folder' })
+    await ui.select({ key: 'folder', value: 'D:\\here' })
+    expect(writes.slice(-2)).toEqual(['PUT /tasks/774/labels {"label_id":9}', 'DELETE /tasks/774/labels/7 '])
     await ui.press({ key: 'reload-folder' })
     await ui.press({ key: 'start-session' })
     expect(calls.at(-1)).toMatchObject({ tool: 'mcp__ccd_session__spawn_task', cwd: 'D:\\elsewhere' })

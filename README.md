@@ -12,14 +12,16 @@ beside the conversation, so the task you and Claude are working on is in view wh
   offered in that folder, briefed with the task.
 
 > ⚠️ Function-hook plugins are an early-access Claude Code API that moves between releases. This was
-> built and tested on **Claude Code 2.1.286**. Run `claude plugin validate .` after an update.
+> built against **Claude Code 2.1.286** and has only been run in its desktop app on Windows. Run
+> `claude plugin validate .` after an update. What has and has not been checked is under
+> [What has been tested](#what-has-been-tested).
 
 ## Requirements
 
-- Claude Code 2.1.286 or later (terminal, or the desktop app's Code tab).
+- Claude Code 2.1.286 (the build it was written against; later builds may move the API).
 - A Vikunja server you can reach, and an API token for it.
 - For auto-open: a Vikunja MCP server in the session whose tools are named `mcp__vikunja__…`
-  (tested with [vikunja-mcp-ng](https://github.com/netadvanced/vikunja-mcp-ng)). The pane works without it.
+  (the names [vikunja-mcp-ng](https://github.com/netadvanced/vikunja-mcp-ng) v0.6.0 uses). The pane works without it.
 - For *Start session*: the Claude desktop app, which provides the session-offer tool. In the terminal
   the button reports that it cannot offer a session.
 
@@ -97,6 +99,17 @@ directory only on the way to writing a file.
 
 Reads: projects, kanban buckets, tasks, comments, labels. Writes: creating a `folder: …` label,
 and adding or removing it on a task — and only when you use the folder picker.
+
+## What has been tested
+
+- **Automated:** `claude plugin test .` mounts the pane on the desktop and terminal surfaces against a
+  **fake** Vikunja written into the test. It covers drawing, opening a task, the filters, the folder
+  label calls and their order, folder creation, and what Start session and Open hand to the host. It
+  proves the mod's logic and that the surface accepts what it draws, not that a real server agrees.
+- **Used by hand**, in the desktop app on Windows, against Vikunja v2.4.0: the lanes, filters, task
+  detail, auto-open, live refresh, and the keyboard shortcuts.
+- **Not yet exercised against a real server:** saving a folder label, creating a folder, and
+  *Start session*. Nothing has been run in the terminal, on macOS or on Linux.
 
 ## Developing
 

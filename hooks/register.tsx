@@ -375,7 +375,17 @@ const createFolder = async ($: EngineInterface, task: Task, typed: string) => {
   const path = underRoot(name)
 
   try {
-    if (!(await $.fs.exists(path))) {
+    if (await $.fs.exists(path)) {
+      // A link under the root can lead anywhere, and Start session would run
+      // there: only a real directory is taken as a task's folder.
+      const { kind, isLink } = await $.fs.stat(path)
+
+      if (isLink || kind !== 'dir') {
+        await say($, `${path} is not a plain folder, so it was not used.`)
+
+        return
+      }
+    } else {
       await $.fs.write(`${path}${sep()}.gitkeep`, '')
     }
   } catch {
@@ -396,9 +406,9 @@ const setFolder = async ($: EngineInterface, task: Task, path: string) => {
   try {
     const send = await client($)
 
-    if (task.folderLabelId !== 0 && !sameFolder(task.folder, folder)) {
-      await send(`/tasks/${task.id}/labels/${task.folderLabelId}`, 'DELETE')
-    }
+    // The new label goes on before the old one comes off, so a request that
+    // fails part-way leaves the task with a folder, never with none.
+    let attached = 0
 
     if (folder !== '' && !sameFolder(task.folder, folder)) {
       const title = `${FOLDER}${folder}`
@@ -407,6 +417,11 @@ const setFolder = async ($: EngineInterface, task: Task, path: string) => {
         labels.find(l => l.title === title) ??
         (await send('/labels', 'PUT', { title, hex_color: FOLDER_COLOR }))
       await send(`/tasks/${task.id}/labels`, 'PUT', { label_id: label.id })
+      attached = label.id
+    }
+
+    if (task.folderLabelId !== 0 && task.folderLabelId !== attached && !sameFolder(task.folder, folder)) {
+      await send(`/tasks/${task.id}/labels/${task.folderLabelId}`, 'DELETE')
     }
 
     await say($, '')
