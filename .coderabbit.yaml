@@ -1,0 +1,51 @@
+# CodeRabbit review settings for claude-code-vikunja-tasks.
+#
+# This mod was built against a real, private Vikunja and scrubbed before it was published. The review's
+# main job is to catch anything the scrub missed. It is a second layer, not the gate: a pushed branch in
+# a public repo is already public, so the scrub happens before the push.
+language: en-AU
+
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: true
+    base_branches: [".*"]
+
+  tools:
+    gitleaks:
+      enabled: true
+    biome:
+      enabled: true
+
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        PRIVACY AND SECRETS REVIEW. This code was written against a private, self-hosted task tracker and
+        scrubbed before publishing. Flag, as a blocking issue, anything that identifies the owner, their
+        network or their tracker, or that grants access:
+        - Credentials of any kind: tokens, API keys, passwords, bearer headers, long random-looking strings.
+        - Private network details: private IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x), ports tied to a
+          specific host, .local hostnames, personal domain names or subdomains.
+        - Personal identifiers: email addresses, people's names other than the licence holder, local user
+          names, absolute paths under a user's home directory, real project or task titles from the
+          owner's tracker.
+        Example values in the README (tasks.example.com, /home/me/code) and in the test's fake tracker
+        are expected and fine.
+
+    - path: "hooks/register.tsx"
+      instructions: |
+        A Claude Code function-hooks plugin that reads a Vikunja server with a bearer token from the
+        environment. Also check: the token can never reach the screen, a log, a toast, the status line or
+        an error message; no default server address is baked in; the only writes to Vikunja are creating a
+        "folder: <path>" label and adding or removing it on a task, never a task update; a folder can only
+        be created directly under the configured root (no path separators or traversal in the name); and
+        no Select is ever given more than 64 options.
+
+    - path: "**/README.md"
+      instructions: |
+        Check the README's claims match the code next to it: the environment variables, the option names,
+        what the mod reads and writes, and what is and is not proven. Flag any claim of "tested" or
+        "proven" the README doesn't back up.

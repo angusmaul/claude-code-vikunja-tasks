@@ -1,0 +1,30 @@
+{
+  "name": "vikunja-tasks",
+  "version": "0.1.0",
+  "description": "A live Vikunja pane for Claude Code: the Doing, Blocked and To-Do lanes, the task the session is working on, and a button to start a session on a task in its folder",
+  "author": {
+    "name": "Tim Moore"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "webUrl": {
+      "type": "string",
+      "title": "Vikunja web address",
+      "description": "Where a task opens in the browser, e.g. https://tasks.example.com. Must be https; leave empty for no link.",
+      "default": ""
+    },
+    "folderRoot": {
+      "type": "string",
+      "title": "Folder root",
+      "description": "The directory every task folder lives directly under, e.g. D:\\ or /home/me/code. Leave empty to turn the folder picker off.",
+      "default": ""
+    },
+    "hiddenProjects": {
+      "type": "string",
+      "title": "Hidden projects",
+      "description": "Text in the title of a top-level project to leave out of the lists by default, with everything under it.",
+      "default": ""
+    }
+  }
+}
