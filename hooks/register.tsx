@@ -751,14 +751,17 @@ export const register: Register = (on, options) => {
                 void keepFocus($, 'refresh')
               }}
             />
-            {/^https?:\/\//.test(config.webUrl) && (
-              <Button
-                key="open"
-                label="Open in Vikunja ↗"
-                hotkey="o"
-                onPress={() => void openInBrowser($, `${config.webUrl}/tasks/${t.id}`)}
-              />
-            )}
+            <Box flexDirection="row" gap={1}>
+              <Button key="reload" label="Refresh" hotkey="r" onPress={() => void loadDetail($, t)} />
+              {/^https?:\/\//.test(config.webUrl) && (
+                <Button
+                  key="open"
+                  label="Open in Vikunja ↗"
+                  hotkey="o"
+                  onPress={() => void openInBrowser($, `${config.webUrl}/tasks/${t.id}`)}
+                />
+              )}
+            </Box>
           </Box>
 
           <Box flexDirection="column">
@@ -814,7 +817,6 @@ export const register: Register = (on, options) => {
                     onPress={() => void startSession($, open)}
                   />
                 )}
-                <Button key="reload-folder" plain dimColor label="Reload" hotkey="r" onPress={() => void loadDetail($, t)} />
               </Box>
             ) : (
               <Text dimColor>{t.folder === '' ? 'No folder set.' : t.folder}</Text>

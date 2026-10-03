@@ -185,10 +185,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // Changing folder puts the new label on before taking the old one off.
     TASK.labels = [{ id: 7, title: 'folder: D:\\elsewhere' }]
-    await ui.press({ key: 'reload-folder' })
+    await ui.press({ key: 'reload' })
     await ui.select({ key: 'folder', value: 'D:\\here' })
     expect(writes.slice(-2)).toEqual(['PUT /tasks/774/labels {"label_id":9}', 'DELETE /tasks/774/labels/7 '])
-    await ui.press({ key: 'reload-folder' })
+    await ui.press({ key: 'reload' })
     await ui.press({ key: 'start-session' })
     expect(calls.at(-1)).toMatchObject({ tool: 'mcp__ccd_session__spawn_task', cwd: 'D:\\elsewhere' })
     TASK.labels = []
