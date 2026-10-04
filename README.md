@@ -11,6 +11,13 @@ beside the conversation, so the task you and Claude are working on is in view wh
 - **Start a session on a task.** Give a task a folder, press *Start session*, and a new session is
   offered in that folder, briefed with the task.
 
+<p>
+  <img src="docs/screenshots/list.jpg" alt="The Vikunja pane's list view: filters, a Find box, and Doing, Blocked and To-Do cards grouped by project, each row with a card number, title, due date, assignee and priority badge" width="380">
+  <img src="docs/screenshots/task.jpg" alt="The Vikunja pane's task view: title, lane and priority badges, a folder picker with a Start session button, the description and comments" width="380">
+</p>
+
+*Both screenshots show the built-in demo data (`/vikunja demo`), not a real board.*
+
 > ⚠️ Function-hook plugins are an early-access Claude Code API that moves between releases. This was
 > built against **Claude Code 2.1.286** and has only been run in its desktop app on Windows. Run
 > `claude plugin validate .` after an update. What has and has not been checked is under
