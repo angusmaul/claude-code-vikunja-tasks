@@ -1,0 +1,101 @@
+name: Claude privacy and code review
+
+# The automated reviewer for this repo. It runs on the Claude subscription via
+# CLAUDE_CODE_OAUTH_TOKEN, so every run draws on the same allowance as interactive Claude Code.
+# The job fails when the review's verdict is BLOCKING, or when no verdict was posted.
+#
+# This is a second layer and not the gate: a pushed branch in a public repo is already public, so
+# the scrub happens before the push. Known secret formats are caught separately by gitleaks.yml.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+# A new push supersedes the review of the previous one, so only the latest head is reviewed.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Drafts are skipped to save allowance. Fork PRs get no secrets, so skip them cleanly.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Record start time
+        id: start
+        run: echo "ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request. Read the diff with `gh pr diff` and the files it touches.
+
+            1. PRIVACY AND SECRETS REVIEW (the main job). This code was written against a private,
+               self-hosted task tracker and scrubbed before publishing. Flag, as a blocking issue,
+               anything that identifies the owner, their network or their tracker, or that grants
+               access:
+               - Credentials of any kind: tokens, API keys, passwords, bearer headers, long
+                 random-looking strings.
+               - Private network details: private IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x), ports
+                 tied to a specific host, .local hostnames, personal domain names or subdomains.
+               - Personal identifiers: email addresses, people's names other than the licence
+                 holder, local user names, absolute paths under a user's home directory, real
+                 project or task titles from the owner's tracker.
+               Example values in the README (tasks.example.com, /home/me/code) and in the test's
+               fake tracker are expected and fine.
+
+            2. hooks/register.tsx is a Claude Code function-hooks plugin that reads a Vikunja server
+               with a bearer token from the environment. Check: the token can never reach the
+               screen, a log, a toast, the status line or an error message; no default server
+               address is baked in; the only writes to Vikunja are creating a "folder: <path>"
+               label and adding or removing it on a task, never a task update; a folder can only
+               be created directly under the configured root (no path separators or traversal in
+               the name); and no Select is ever given more than 64 options.
+
+            3. READMEs: check the claims match the code next to them: the environment variables,
+               the option names, what the mod reads and writes, and what is and is not proven.
+               Flag any claim of "tested" or "proven" the README doesn't back up.
+
+            4. Ordinary code review: report real bugs and logic errors in the changed code.
+
+            Report each finding as an inline comment on the line it concerns. Then post one
+            top-level comment with `gh pr comment` that starts with either "BLOCKING" or
+            "NO BLOCKING ISSUES" and lists the findings in one line each. If you quote a suspected
+            secret, show only its first four characters. Do not comment on style.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+
+      # The action itself goes green whatever the review found, so read the verdict back.
+      - name: Fail on a blocking verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SINCE: ${{ steps.start.outputs.ts }}
+        run: |
+          # The action skips itself on a PR that changes this file, so there is no verdict to read.
+          if gh pr diff "$PR" -R "$REPO" --name-only | grep -qx '.github/workflows/claude-review.yml'; then
+            echo "::notice::This PR changes the review workflow, so Claude did not review it."
+            exit 0
+          fi
+          verdict=$(gh api "repos/$REPO/issues/$PR/comments?since=$SINCE&per_page=100" --jq '[.[] | select(.user.login | startswith("claude")) | .body] | last // ""')
+          case "$verdict" in
+            "NO BLOCKING ISSUES"*) echo "Review verdict: no blocking issues." ;;
+            BLOCKING*) echo "::error::Claude's review found blocking issues. See its comment on the PR."; exit 1 ;;
+            *) echo "::error::Claude posted no verdict for this run, so the PR is unreviewed."; exit 1 ;;
+          esac
