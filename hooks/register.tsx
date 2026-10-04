@@ -7,8 +7,8 @@ const PANE = 'vikunja-tasks'
 const TITLE = 'Vikunja'
 
 // What the plugin's `userConfig` sets, read once as the module registers.
-// `webUrl`: where a task opens in a browser; a Link takes https only, so with
-// anything else the link is left out. `folderRoot`: the one directory every
+// `webUrl`: where a task opens in a browser; with anything that is not
+// http(s) the button is left out. `folderRoot`: the one directory every
 // task folder lives directly under. `hiddenProjects`: text in the title of a
 // top-level project that, with everything under it, the lists leave out
 // unless asked for.
@@ -59,7 +59,8 @@ const ALL = 'all'
 // The Project filter's value for "hidden projects too"; ALL leaves them out.
 const EVERYTHING = 'everything'
 const HIDE = 'hide'
-const NO_FILTERS: Filters = { assignee: ALL, project: ALL, priority: ALL, blocked: ALL }
+const NO_FILTERS: Filters = { assignee: ALL, project: ALL, priority: ALL, blocked: ALL, due: ALL }
+const WEEK_MS = 7 * 24 * 60 * 60_000
 const filters = atom({ plugin: 'vikunja-tasks', key: 'filters' } as const, NO_FILTERS)
 
 // Vikunja has no custom fields, so a task's working folder is a label on it:
@@ -217,6 +218,8 @@ const toTask = (raw: Raw, projects: Record<number, string>): Task => ({
   isDone: Boolean(raw.done),
   project: projects[raw.project_id] ?? `project ${raw.project_id}`,
   assignees: (raw.assignees ?? []).map((a: Raw) => a.username),
+  // Vikunja spells "no date" as year 1, which parses to a negative time.
+  dueAt: Math.max(0, Date.parse(String(raw.due_date ?? '')) || 0),
   isHome: lanes?.home[raw.project_id] === true,
 })
 
@@ -372,7 +375,17 @@ const createFolder = async ($: EngineInterface, task: Task, typed: string) => {
   const path = underRoot(name)
 
   try {
-    if (!(await $.fs.exists(path))) {
+    if (await $.fs.exists(path)) {
+      // A link under the root can lead anywhere, and Start session would run
+      // there: only a real directory is taken as a task's folder.
+      const { kind, isLink } = await $.fs.stat(path)
+
+      if (isLink || kind !== 'dir') {
+        await say($, `${path} is not a plain folder, so it was not used.`)
+
+        return
+      }
+    } else {
       await $.fs.write(`${path}${sep()}.gitkeep`, '')
     }
   } catch {
@@ -393,9 +406,9 @@ const setFolder = async ($: EngineInterface, task: Task, path: string) => {
   try {
     const send = await client($)
 
-    if (task.folderLabelId !== 0 && !sameFolder(task.folder, folder)) {
-      await send(`/tasks/${task.id}/labels/${task.folderLabelId}`, 'DELETE')
-    }
+    // The new label goes on before the old one comes off, so a request that
+    // fails part-way leaves the task with a folder, never with none.
+    let attached = 0
 
     if (folder !== '' && !sameFolder(task.folder, folder)) {
       const title = `${FOLDER}${folder}`
@@ -404,6 +417,11 @@ const setFolder = async ($: EngineInterface, task: Task, path: string) => {
         labels.find(l => l.title === title) ??
         (await send('/labels', 'PUT', { title, hex_color: FOLDER_COLOR }))
       await send(`/tasks/${task.id}/labels`, 'PUT', { label_id: label.id })
+      attached = label.id
+    }
+
+    if (task.folderLabelId !== 0 && task.folderLabelId !== attached && !sameFolder(task.folder, folder)) {
+      await send(`/tasks/${task.id}/labels/${task.folderLabelId}`, 'DELETE')
     }
 
     await say($, '')
@@ -488,7 +506,7 @@ const autoOpen = async ($: EngineInterface, id: number) => {
 
   return show(
     $,
-    known ?? { id, identifier: `#${id}`, title: '…', priority: 0, isDone: false, project: '', assignees: [], isHome: false, folder: '', folderLabelId: 0 },
+    known ?? { id, identifier: `#${id}`, title: '…', priority: 0, isDone: false, project: '', assignees: [], dueAt: 0, isHome: false, folder: '', folderLabelId: 0 },
   )
 }
 
@@ -562,6 +580,40 @@ const refresh = ($: EngineInterface, isForced = false): Promise<void> => {
   }
 
   return inFlight
+}
+
+// Hands a task's page to the system's browser. A Button, not a Link, so it
+// can carry a hotkey; the mod has no call that opens a URL, so it runs the
+// platform's own opener by argv, with no shell, on the configured address.
+const openInBrowser = async ($: EngineInterface, url: string) => {
+  const isWindows = (await $.env.get('OS')) === 'Windows_NT'
+  const openers = isWindows
+    ? [['rundll32', 'url.dll,FileProtocolHandler', url]]
+    : [
+        ['xdg-open', url],
+        ['open', url],
+      ]
+
+  for (const argv of openers) {
+    try {
+      const { exitCode } = await $.process.run(argv, { timeoutMs: 10_000 })
+
+      if (exitCode === 0) {
+        return
+      }
+    } catch {
+      // not on this machine: try the next
+    }
+  }
+
+  $.ui.toast('Could not open the browser')
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const dueLabel = (ms: number) => {
+  const d = new Date(ms)
+
+  return `${d.getDate()} ${MONTHS[d.getMonth()]}`
 }
 
 const clock = (ms: number) => {
@@ -647,7 +699,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const table = $.ui.resolve(e)
-    const { Box, Button, Link, Markdown, Text } = table
+    const { Box, Button, Markdown, Text } = table
     const now = await read($, board)
     const shown = await read($, openId)
     const detail = shown === 0 ? null : await read($, selected)
@@ -657,6 +709,10 @@ export const register: Register = (on, options) => {
     const touched = new Set(now.touched.map(t => t.id))
     const doing = new Set(now.doing.map(t => t.id))
     const blocked = new Set(now.blocked.map(t => t.id))
+
+    // The desktop draws the focus ring outside its button, and the pane's edge
+    // clips it; the top row keeps a cell clear of the edge so the ring fits.
+    const ringRoom = e.surface === 'terminal' ? {} : { paddingX: 1, paddingTop: 1 }
 
     const laneOf = (t: Task) =>
       t.isDone ? 'done' : doing.has(t.id) ? 'doing' : blocked.has(t.id) ? 'blocked' : 'to-do'
@@ -684,7 +740,7 @@ export const register: Register = (on, options) => {
 
       return (
         <Box flexDirection="column" gap={1}>
-          <Box flexDirection="row" justifyContent="space-between">
+          <Box flexDirection="row" justifyContent="space-between" {...ringRoom}>
             <Button
               key="back"
               label="‹ All tasks"
@@ -695,9 +751,17 @@ export const register: Register = (on, options) => {
                 void keepFocus($, 'refresh')
               }}
             />
-            {config.webUrl.startsWith('https://') && (
-              <Link href={`${config.webUrl}/tasks/${t.id}`} label="Open in Vikunja ↗" />
-            )}
+            <Box flexDirection="row" gap={1}>
+              <Button key="reload" label="Refresh" hotkey="r" onPress={() => void loadDetail($, t)} />
+              {/^https?:\/\//.test(config.webUrl) && (
+                <Button
+                  key="open"
+                  label="Open in Vikunja ↗"
+                  hotkey="o"
+                  onPress={() => void openInBrowser($, `${config.webUrl}/tasks/${t.id}`)}
+                />
+              )}
+            </Box>
           </Box>
 
           <Box flexDirection="column">
@@ -709,6 +773,11 @@ export const register: Register = (on, options) => {
               {pill(lane.toUpperCase(), LANE_COLOR[lane])}
               {t.priority > 0 && priorityPill(t.priority)}
               {t.assignees.length > 0 && <Text dimColor>{t.assignees.join(', ')}</Text>}
+              {t.dueAt > 0 && (
+                <Text color={t.dueAt < now.fetchedAt && !t.isDone ? '#e5484d' : undefined} dimColor={t.dueAt >= now.fetchedAt || t.isDone}>
+                  due {dueLabel(t.dueAt)}
+                </Text>
+              )}
             </Box>
             <Text dimColor>
               {open.isLoading
@@ -748,7 +817,6 @@ export const register: Register = (on, options) => {
                     onPress={() => void startSession($, open)}
                   />
                 )}
-                <Button key="reload-folder" plain dimColor label="Reload" onPress={() => void loadDetail($, t)} />
               </Box>
             ) : (
               <Text dimColor>{t.folder === '' ? 'No folder set.' : t.folder}</Text>
@@ -811,7 +879,7 @@ export const register: Register = (on, options) => {
     const row = (section: string, t: Task, facts: string) => {
       // The desktop's letters run narrower than the cells `columns` counts,
       // so the cut is looser than the cell arithmetic; the box clips the rest.
-      const room = Math.max(12, Math.floor((columns - facts.length - 20) * 1.45))
+      const room = Math.max(12, Math.floor((columns - facts.length - 20 - (t.dueAt > 0 ? 7 : 0)) * 1.45))
       const title = t.title.length > room ? `${t.title.slice(0, room - 1)}…` : t.title
 
       return (
@@ -836,6 +904,11 @@ export const register: Register = (on, options) => {
             />
           </Box>
           <Box flexGrow={1} />
+          {t.dueAt > 0 && (
+            <Text color={t.dueAt < today && !t.isDone ? '#e5484d' : undefined} dimColor={t.dueAt >= today || t.isDone}>
+              {dueLabel(t.dueAt)}
+            </Text>
+          )}
           <Text dimColor>{facts}</Text>
           {section === 'session' && pill(laneOf(t).toUpperCase(), LANE_COLOR[laneOf(t)])}
           {/* the pill's slot is kept when a task has no priority, so the column stays straight */}
@@ -847,12 +920,17 @@ export const register: Register = (on, options) => {
     const picked = { ...NO_FILTERS, ...(await read($, filters)) }
     // The Blocked toggle shows its own state, so it does not count as a filter to clear.
     const isFiltered = [picked.assignee, picked.project, picked.priority].some(value => value !== ALL)
+    // "Now" is the last read of the board, so a drawing never disagrees with its data.
+    const today = now.fetchedAt
     const passes = (t: Task) =>
       (picked.project === ALL
         ? !t.isHome || touched.has(t.id) // a hidden task the session is on still shows
         : picked.project === EVERYTHING || t.project === picked.project) &&
       (picked.assignee === ALL ||
         (picked.assignee === 'nobody' ? t.assignees.length === 0 : t.assignees.includes(picked.assignee))) &&
+      (picked.due === ALL ||
+        (t.dueAt > 0 &&
+          (picked.due === 'overdue' ? t.dueAt < today : t.dueAt >= today && t.dueAt < today + WEEK_MS))) &&
       (picked.priority === ALL ||
         (picked.priority === 'unset' ? t.priority === 0 : t.priority >= Number(picked.priority)))
     const todo = now.todo ?? [] // a board stored before To-Do was read has none
@@ -904,11 +982,11 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column" gap={1}>
-        <Box flexDirection="row" justifyContent="space-between">
+        <Box flexDirection="row" justifyContent="space-between" {...ringRoom}>
           <Text dimColor>
             {now.fetchedAt === 0 ? 'loading…' : `as of ${clock(now.fetchedAt)}`}
           </Text>
-          <Button key="refresh" label="Refresh" autoFocus onPress={() => void refresh($, true)} />
+          <Button key="refresh" label="Refresh" hotkey="r" autoFocus onPress={() => void refresh($, true)} />
         </Box>
         {'Select' in table && (
           <Box
@@ -975,8 +1053,23 @@ export const register: Register = (on, options) => {
                 onPress={() => pick('blocked')(HIDE)}
               />
             </Box>
+            <Box flexDirection="row" alignItems="center">
+              <Text dimColor>Due </Text>
+              {[
+                ['overdue', 'Overdue'],
+                ['week', 'This week'],
+                [ALL, 'All'],
+              ].map(([value, label]) => (
+                <Button
+                  key={`due-${value}`}
+                  label={label}
+                  variant={picked.due === value ? 'primary' : 'secondary'}
+                  onPress={() => pick('due')(value)}
+                />
+              ))}
+            </Box>
             {isFiltered && (
-              <Button key="clear-filters" plain label="Clear" onPress={() => void update($, filters, was => ({ ...NO_FILTERS, blocked: was?.blocked ?? ALL }))} />
+              <Button key="clear-filters" plain label="Clear" onPress={() => void update($, filters, was => ({ ...NO_FILTERS, blocked: was?.blocked ?? ALL, due: was?.due ?? ALL }))} />
             )}
           </Box>
         )}

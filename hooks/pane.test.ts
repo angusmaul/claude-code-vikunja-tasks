@@ -12,6 +12,7 @@ const TASK = {
   created: '2026-10-01T10:00:00+10:00',
   updated: '2026-10-03T14:02:00+10:00',
   labels: [] as { id: number; title: string }[],
+  due_date: '0001-01-01T00:00:00Z',
 }
 
 // A Vikunja small enough to answer every path the mod reads.
@@ -40,7 +41,12 @@ const answer = (url: string): unknown => {
 
   if (path.startsWith('/tasks?')) {
     if (path.includes('112')) {
-      return [{ ...TASK, id: 901, identifier: '#9', title: 'Not started yet' }]
+      return [
+        { ...TASK, id: 901, identifier: '#9', title: 'Not started yet' },
+        // the mocked clock reads 1,000,000 ms: one of these is past, one is three days out
+        { ...TASK, id: 902, identifier: '#10', title: 'Late', due_date: '1970-01-01T00:00:01Z' },
+        { ...TASK, id: 903, identifier: '#12', title: 'Soon', due_date: '1970-01-04T00:00:00Z' },
+      ]
     }
 
     return path.includes('113') ? [TASK, { ...TASK, id: 900, identifier: '#3', project_id: 14 }] : []
@@ -57,7 +63,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const options = { webUrl: 'https://tasks.test', folderRoot: 'D:\\', hiddenProjects: 'home improvement' }
 
   test(`draws the lanes and a task on ${surface}`, { options }, async ($, on) => {
-    mock.env(on, { VIKUNJA_API_TOKEN: 'tk_test', VIKUNJA_URL: 'http://vikunja.test/api/v1' })
+    mock.env(on, { OS: 'Windows_NT', VIKUNJA_API_TOKEN: 'tk_test', VIKUNJA_URL: 'http://vikunja.test/api/v1' })
     mock.clock(on, { now: 1_000_000 })
     const writes: string[] = []
     const calls: Record<string, unknown>[] = []
@@ -82,7 +88,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
         { name: '$RECYCLE.BIN', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
       ],
     }) as never)
-    on('fs.exists', () => ({ value: false }) as never)
+    const ran: (readonly string[])[] = []
+    on('process.run', (_, e) => {
+      ran.push((e as { argv: readonly string[] }).argv)
+
+      return { value: { exitCode: 0, stdout: '', stderr: '' } } as never
+    })
+    on('fs.exists', (_, e) => ({ value: (e as { path: string }).path.endsWith('linked') }) as never)
+    on('fs.stat', () => ({ value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: true } }) as never)
     on('fs.write', (_, e) => {
       made.push((e as { path: string }).path)
 
@@ -115,6 +128,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await ui.find({ key: 'open-Doing-774' })).toBeDefined()
     expect(await ui.find({ key: 'open-To-Do-901' })).toBeDefined()
 
+    // The due buttons: overdue, due in the next seven days, and all.
+    const shown = async () =>
+      (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => String(k).startsWith('open-To-Do')).sort()
+    expect(await shown()).toEqual(['open-To-Do-901', 'open-To-Do-902', 'open-To-Do-903'])
+    await ui.press({ key: 'due-overdue' })
+    expect(await shown()).toEqual(['open-To-Do-902'])
+    await ui.press({ key: 'due-week' })
+    expect(await shown()).toEqual(['open-To-Do-903'])
+    await ui.press({ key: 'due-all' })
+    expect(await shown()).toEqual(['open-To-Do-901', 'open-To-Do-902', 'open-To-Do-903'])
+
     // Blocked can be hidden and shown again.
     expect(await ui.find({ text: 'BLOCKED' })).toBeDefined()
     await ui.press({ key: 'blocked-hide' })
@@ -134,6 +158,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await ui.find({ key: 'back' })).toBeDefined()
     expect(await ui.find({ type: 'Markdown', text: 'Looks good' })).toBeDefined()
 
+    // Open is a Button that hands the task's page to the system browser.
+    await ui.press({ key: 'open' })
+    expect(ran).toEqual([['rundll32', 'url.dll,FileProtocolHandler', 'https://tasks.test/tasks/774']])
+
     // Picking a folder labels the task; Start session offers one in it.
     expect(await ui.find({ type: 'Select', key: 'folder', text: '$RECYCLE' })).toBeUndefined()
     await ui.select({ key: 'folder', value: 'D:\\here' })
@@ -146,12 +174,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.select({ key: 'folder', value: '(other)' })
     await ui.input({ key: 'folder-path', text: 'bad/name' })
     expect(made).toEqual([])
+    // A link under the root is refused: it could lead a session anywhere.
+    await ui.input({ key: 'folder-path', text: 'linked' })
+    expect(made).toEqual([])
+    expect(writes).toHaveLength(2)
+    await ui.select({ key: 'folder', value: '(other)' })
     await ui.input({ key: 'folder-path', text: 'fresh' })
     expect(made).toEqual(['D:\\fresh\\.gitkeep'])
     expect(writes.at(-1)).toBe('PUT /tasks/774/labels {"label_id":9}')
 
-    TASK.labels = [{ id: 9, title: 'folder: D:\\elsewhere' }]
-    await ui.press({ key: 'reload-folder' })
+    // Changing folder puts the new label on before taking the old one off.
+    TASK.labels = [{ id: 7, title: 'folder: D:\\elsewhere' }]
+    await ui.press({ key: 'reload' })
+    await ui.select({ key: 'folder', value: 'D:\\here' })
+    expect(writes.slice(-2)).toEqual(['PUT /tasks/774/labels {"label_id":9}', 'DELETE /tasks/774/labels/7 '])
+    await ui.press({ key: 'reload' })
     await ui.press({ key: 'start-session' })
     expect(calls.at(-1)).toMatchObject({ tool: 'mcp__ccd_session__spawn_task', cwd: 'D:\\elsewhere' })
     TASK.labels = []

@@ -6,6 +6,8 @@ export type Task = {
   isDone: boolean
   project: string
   assignees: string[]
+  /** When it is due, in milliseconds since the epoch; 0 when it has no due date. */
+  dueAt: number
   /** In a project under the tree `hiddenProjects` names, which the lists leave out by default. */
   isHome: boolean
   /** The working folder the task's `folder: <path>` label names; '' when none. */
@@ -47,6 +49,8 @@ export type Filters = {
   priority: string
   /** `hide` leaves the Blocked section out. */
   blocked: string
+  /** `overdue`, `week` (due in the next seven days), or `all`. */
+  due: string
 }
 
 /** The folder picker and the Start session button, per open task. */
