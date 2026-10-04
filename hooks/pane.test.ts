@@ -68,10 +68,31 @@ for (const surface of ['desktop', 'terminal'] as const) {
     on('ui.status', () => ({ value: undefined }) as never)
     on('ui.toast', () => ({ value: undefined }) as never)
     on('ui.focus', () => ({ value: {} }) as never)
-    // no http, env, fs, process or tool hook: any such call fails the test's chain
+    // Every way out of the process is counted. Live mode's first read of the
+    // board asks the environment for its settings, so the count is taken once
+    // demo mode is on, and must not have moved by the end.
+    const outside: string[] = []
+    const counted = (name: string, value: unknown) => () => {
+      outside.push(name)
+
+      return { value } as never
+    }
+    on('env.get', counted('env.get', undefined))
+    on('http.fetch', counted('http.fetch', { status: 500, ok: false, headers: {}, text: '' }))
+    on('fs.list', counted('fs.list', []))
+    on('fs.exists', counted('fs.exists', false))
+    on('fs.stat', counted('fs.stat', { kind: 'dir', size: 0, mtimeMs: 0, isLink: false }))
+    on('fs.write', counted('fs.write', undefined))
+    on('process.run', counted('process.run', { exitCode: 0, stdout: '', stderr: '' }))
+    on('tool.call', () => {
+      outside.push('tool.call')
+
+      return { result: 'ok' } as never
+    })
 
     await $.session.start({ cwd: '.', surface, isInteractive: true })
     await $.command.run({ command: 'vikunja', args: 'demo' } as never)
+    const before = outside.length
 
     const ui = await $.ui.mount({
       plugin: 'vikunja-tasks',
@@ -101,7 +122,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await ui.find({ text: 'Demo: this would offer a session in ~/code/infra' })).toBeDefined()
     await ui.press({ key: 'open' })
 
+    // A new folder, typed in, is not made on disk either.
+    await ui.select({ key: 'folder', value: '(other)' })
+    await ui.input({ key: 'folder-path', text: 'brand-new' })
+
+    expect(outside.slice(before)).toEqual([])
+
+    // Back in live mode the pane asks the environment for its settings again.
     await $.command.run({ command: 'vikunja', args: 'live' } as never)
+    expect(outside.slice(before)).toContain('env.get')
   })
 
   const options = { webUrl: 'https://tasks.test', folderRoot: 'D:\\', hiddenProjects: 'household' }

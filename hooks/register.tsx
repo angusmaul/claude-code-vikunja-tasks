@@ -578,6 +578,12 @@ const find = async ($: EngineInterface, typed: string) => {
   await update($, search, () => ({ ...NO_SEARCH, query, isLoading: true }))
 
   try {
+    // Project names come with the lanes: a search made before the first read
+    // of the board, or just after a mode switch, starts or joins that read.
+    if (lanes === null) {
+      await refresh($)
+    }
+
     const get = await client($)
     const rows = await paged(get, `/tasks?filter=${encodeURIComponent(`index = ${Number(query)}`)}`)
     const results = rows
@@ -586,7 +592,8 @@ const find = async ($: EngineInterface, typed: string) => {
     await update($, search, now => (now?.query === query ? { ...NO_SEARCH, query, results } : (now ?? NO_SEARCH)))
   } catch (err) {
     const error = err instanceof Unreachable ? err.message : 'Vikunja answer could not be read'
-    await update($, search, () => ({ ...NO_SEARCH, query, error }))
+    // As above: a late failure must not overwrite a newer search, or a cleared one.
+    await update($, search, now => (now?.query === query ? { ...NO_SEARCH, query, error } : (now ?? NO_SEARCH)))
   }
 }
 
