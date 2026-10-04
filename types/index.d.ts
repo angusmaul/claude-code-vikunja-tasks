@@ -53,6 +53,15 @@ export type Filters = {
   due: string
 }
 
+/** A lookup by the number on the card (`#42`), across every project and lane, done tasks included. */
+export type Search = {
+  /** The number looked for, as digits; '' when no search is showing. */
+  query: string
+  results: Task[]
+  isLoading: boolean
+  error: string | null
+}
+
 /** The folder picker and the Start session button, per open task. */
 export type Launch = {
   /** The folders directly under the drive every task folder lives on. */
@@ -65,6 +74,6 @@ export type Launch = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'vikunja-tasks': { board: Board; touchedIds: number[]; selected: Detail | null; openId: number; filters: Filters; launch: Launch }
+    'vikunja-tasks': { board: Board; touchedIds: number[]; selected: Detail | null; openId: number; filters: Filters; launch: Launch; demo: boolean; search: Search }
   }
 }

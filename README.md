@@ -61,7 +61,7 @@ Set under `pluginConfigs` in `~/.claude/settings.json`. All are optional.
       "options": {
         "webUrl": "https://tasks.example.com",
         "folderRoot": "/home/me/code",
-        "hiddenProjects": "home improvement"
+        "hiddenProjects": "personal"
       }
     }
   }
@@ -78,6 +78,14 @@ Set under `pluginConfigs` in `~/.claude/settings.json`. All are optional.
 
 The pane opens when a session starts. `/vikunja` reopens it and refreshes.
 
+`/vikunja demo` switches the pane to a small pretend tracker held in memory, with invented projects
+and tasks, so you can try the mod (or take a screenshot) without a server and without showing your
+own board. Nothing is read from or written to the network or the disk while it is on. `/vikunja live`
+switches back.
+
+- **Find #** looks a task up by the number on its card, across every project and lane, done tasks
+  included. The number is per project, so one number can list several tasks. It does not search the
+  internal id in a task's URL.
 - Click a task to read it; **‹ All tasks** (or `b`) goes back.
 - While the pane has the keyboard: `r` refreshes, and on a task `o` opens it in Vikunja.
 - The first click after typing in the prompt gives the pane the keyboard; clicks after that are single.
