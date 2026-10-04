@@ -11,6 +11,13 @@ beside the conversation, so the task you and Claude are working on is in view wh
 - **Start a session on a task.** Give a task a folder, press *Start session*, and a new session is
   offered in that folder, briefed with the task.
 
+<p>
+  <img src="docs/screenshots/list.jpg" alt="The Vikunja pane's list view: filters, a Find box, and Doing, Blocked and To-Do cards grouped by project, each row with a card number, title, due date, assignee and priority badge" width="380">
+  <img src="docs/screenshots/task.jpg" alt="The Vikunja pane's task view: title, lane and priority badges, a folder picker with a Start session button, the description and comments" width="380">
+</p>
+
+*Both screenshots show the built-in demo data (`/vikunja demo`), not a real board.*
+
 > ⚠️ Function-hook plugins are an early-access Claude Code API that moves between releases. This was
 > built against **Claude Code 2.1.286** and has only been run in its desktop app on Windows. Run
 > `claude plugin validate .` after an update. What has and has not been checked is under
@@ -61,7 +68,7 @@ Set under `pluginConfigs` in `~/.claude/settings.json`. All are optional.
       "options": {
         "webUrl": "https://tasks.example.com",
         "folderRoot": "/home/me/code",
-        "hiddenProjects": "home improvement"
+        "hiddenProjects": "personal"
       }
     }
   }
@@ -78,6 +85,14 @@ Set under `pluginConfigs` in `~/.claude/settings.json`. All are optional.
 
 The pane opens when a session starts. `/vikunja` reopens it and refreshes.
 
+`/vikunja demo` switches the pane to a small pretend tracker held in memory, with invented projects
+and tasks, so you can try the mod (or take a screenshot) without a server and without showing your
+own board. Nothing is read from or written to the network or the disk while it is on. `/vikunja live`
+switches back.
+
+- **Find #** looks a task up by the number on its card, across every project and lane, done tasks
+  included. The number is per project, so one number can list several tasks. It does not search the
+  internal id in a task's URL.
 - Click a task to read it; **‹ All tasks** (or `b`) goes back.
 - While the pane has the keyboard: `r` refreshes, and on a task `o` opens it in Vikunja.
 - The first click after typing in the prompt gives the pane the keyboard; clicks after that are single.

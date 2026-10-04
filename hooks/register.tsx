@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Board, Comment, Detail, Filters, Launch, Task } from '../types'
+import { DEMO_CONFIG, DEMO_FOLDERS, demoAnswer } from './demo'
+import type { Board, Comment, Detail, Filters, Launch, Search, Task } from '../types'
 
 const PANE = 'vikunja-tasks'
 const TITLE = 'Vikunja'
@@ -112,7 +113,38 @@ let inFlight: Promise<void> | null = null
 // request, and the request carries the token.
 class Unreachable extends Error {}
 
+// Demo mode: the pane runs on the pretend tracker in ./demo, for screenshots
+// and for trying the mod with no server. The person's own options are kept
+// aside while it is on, and nothing leaves the process.
+const demo = atom({ plugin: 'vikunja-tasks', key: 'demo' } as const, false)
+let isDemo = false
+let ownConfig = { ...config }
+
+const setDemo = async ($: EngineInterface, on: boolean) => {
+  if (on !== isDemo) {
+    if (on) {
+      ownConfig = { ...config }
+    }
+
+    Object.assign(config, on ? DEMO_CONFIG : ownConfig)
+    isDemo = on
+    lanes = null
+  }
+
+  await update($, touchedIds, () => [])
+  await update($, openId, () => 0)
+  await update($, filters, () => NO_FILTERS)
+  await update($, search, () => NO_SEARCH)
+  await update($, demo, () => on)
+}
+
 const client = async ($: EngineInterface) => {
+  if (isDemo) {
+    const now = await $.clock.now()
+
+    return async (path: string, method = 'GET', body?: unknown): Promise<any> => demoAnswer(now, path, method, body)
+  }
+
   const token = await $.env.get('VIKUNJA_API_TOKEN')
   const base = ((await $.env.get('VIKUNJA_URL')) ?? '').replace(/\/+$/, '')
 
@@ -340,6 +372,12 @@ const knownFolders = async ($: EngineInterface) => {
       return
     }
 
+    if (isDemo) {
+      await update($, launch, was => ({ ...NO_LAUNCH, ...was, folders: DEMO_FOLDERS }))
+
+      return
+    }
+
     const entries = await $.fs.list(config.folderRoot)
     const folders = entries
       .filter(e => e.kind === 'dir' && !/^[$.]/.test(e.name) && e.name !== 'System Volume Information')
@@ -375,7 +413,9 @@ const createFolder = async ($: EngineInterface, task: Task, typed: string) => {
   const path = underRoot(name)
 
   try {
-    if (await $.fs.exists(path)) {
+    if (isDemo) {
+      // nothing is made on disk in demo mode
+    } else if (await $.fs.exists(path)) {
       // A link under the root can lead anywhere, and Start session would run
       // there: only a real directory is taken as a task's folder.
       const { kind, isLink } = await $.fs.stat(path)
@@ -437,6 +477,13 @@ const setFolder = async ($: EngineInterface, task: Task, path: string) => {
 // offer as a chip in the conversation, and the person's click starts it.
 const startSession = async ($: EngineInterface, detail: Detail) => {
   const t = detail.task
+
+  if (isDemo) {
+    await say($, `Demo: this would offer a session in ${t.folder}.`)
+
+    return
+  }
+
   const here = await $.session.cwd().catch(() => '')
   const title = `Work on Vikunja ${t.identifier}: ${t.title}`
   const prompt = [
@@ -445,6 +492,9 @@ const startSession = async ($: EngineInterface, detail: Detail) => {
     `Start by reading the task and its comments through the vikunja MCP (vikunja_tasks get, id ${t.id}),`,
     'move the task to Doing if it is not there, and record what was',
     'done on the task when finished.',
+    '',
+    `When you mention this task to the person, call it ${t.identifier} in "${t.project}": that is the number`,
+    `their board shows. ${t.id} is the internal id the tools take, and means nothing to them.`,
     '',
     'The description as it stood when this session was started:',
     '',
@@ -508,6 +558,43 @@ const autoOpen = async ($: EngineInterface, id: number) => {
     $,
     known ?? { id, identifier: `#${id}`, title: '…', priority: 0, isDone: false, project: '', assignees: [], dueAt: 0, isHome: false, folder: '', folderLabelId: 0 },
   )
+}
+
+// Finds tasks by the number on their card. That number is per project, so
+// one number can name a task in several; all of them are listed, open ones
+// first. The internal id (the one in a task's URL) is never searched.
+const NO_SEARCH: Search = { query: '', results: [], isLoading: false, error: null }
+const search = atom({ plugin: 'vikunja-tasks', key: 'search' } as const, NO_SEARCH)
+
+const find = async ($: EngineInterface, typed: string) => {
+  const query = typed.replace(/[^0-9]/g, '')
+
+  if (query === '') {
+    await update($, search, () => NO_SEARCH)
+
+    return
+  }
+
+  await update($, search, () => ({ ...NO_SEARCH, query, isLoading: true }))
+
+  try {
+    // Project names come with the lanes: a search made before the first read
+    // of the board, or just after a mode switch, starts or joins that read.
+    if (lanes === null) {
+      await refresh($)
+    }
+
+    const get = await client($)
+    const rows = await paged(get, `/tasks?filter=${encodeURIComponent(`index = ${Number(query)}`)}`)
+    const results = rows
+      .map(r => toTask(r, lanes?.projects ?? {}))
+      .sort((a, b) => Number(a.isDone) - Number(b.isDone) || a.project.localeCompare(b.project))
+    await update($, search, now => (now?.query === query ? { ...NO_SEARCH, query, results } : (now ?? NO_SEARCH)))
+  } catch (err) {
+    const error = err instanceof Unreachable ? err.message : 'Vikunja answer could not be read'
+    // As above: a late failure must not overwrite a newer search, or a cleared one.
+    await update($, search, now => (now?.query === query ? { ...NO_SEARCH, query, error } : (now ?? NO_SEARCH)))
+  }
 }
 
 const byProjectThenPriority = (a: Task, b: Task) =>
@@ -586,6 +673,12 @@ const refresh = ($: EngineInterface, isForced = false): Promise<void> => {
 // can carry a hotkey; the mod has no call that opens a URL, so it runs the
 // platform's own opener by argv, with no shell, on the configured address.
 const openInBrowser = async ($: EngineInterface, url: string) => {
+  if (isDemo) {
+    $.ui.toast(`Demo: this would open ${url}`)
+
+    return
+  }
+
   const isWindows = (await $.env.get('OS')) === 'Windows_NT'
   const openers = isWindows
     ? [['rundll32', 'url.dll,FileProtocolHandler', url]]
@@ -635,6 +728,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'vikunja',
       description: 'Show the Vikunja tasks in Doing, Blocked and To-Do, and the ones this session touched',
+      argumentHint: '[demo|live]',
     })
     void $.ui.open({ id: PANE, title: TITLE })
     void refresh($)
@@ -650,9 +744,21 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'vikunja' }, async $ => {
+  on('command.run', { command: 'vikunja' }, async ($, e) => {
+    const word = e.args.trim().toLowerCase()
+
+    if (word === 'demo' || word === 'live') {
+      await (inFlight ?? Promise.resolve())
+      await setDemo($, word === 'demo')
+    }
+
     await $.ui.open({ id: PANE, title: TITLE })
     await refresh($, true)
+
+    if (word === 'demo') {
+      return { text: 'Vikunja pane is showing demo data. /vikunja live goes back to your tracker.' }
+    }
+
     const now = await read($, board)
 
     return {
@@ -714,6 +820,7 @@ export const register: Register = (on, options) => {
     // clips it; the top row keeps a cell clear of the edge so the ring fits.
     const ringRoom = e.surface === 'terminal' ? {} : { paddingX: 1, paddingTop: 1 }
 
+    const isDemoShown = await read($, demo)
     const laneOf = (t: Task) =>
       t.isDone ? 'done' : doing.has(t.id) ? 'doing' : blocked.has(t.id) ? 'blocked' : 'to-do'
 
@@ -910,13 +1017,14 @@ export const register: Register = (on, options) => {
             </Text>
           )}
           <Text dimColor>{facts}</Text>
-          {section === 'session' && pill(laneOf(t).toUpperCase(), LANE_COLOR[laneOf(t)])}
+          {(section === 'session' || section === 'found') && pill(laneOf(t).toUpperCase(), LANE_COLOR[laneOf(t)])}
           {/* the pill's slot is kept when a task has no priority, so the column stays straight */}
           {t.priority > 0 ? priorityPill(t.priority) : <Box width={4} flexShrink={0} />}
         </Box>
       )
     }
 
+    const found = { ...NO_SEARCH, ...(await read($, search)) }
     const picked = { ...NO_FILTERS, ...(await read($, filters)) }
     // The Blocked toggle shows its own state, so it does not count as a filter to clear.
     const isFiltered = [picked.assignee, picked.project, picked.priority].some(value => value !== ALL)
@@ -985,6 +1093,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" justifyContent="space-between" {...ringRoom}>
           <Text dimColor>
             {now.fetchedAt === 0 ? 'loading…' : `as of ${clock(now.fetchedAt)}`}
+            {isDemoShown ? ' · demo data' : ''}
           </Text>
           <Button key="refresh" label="Refresh" hotkey="r" autoFocus onPress={() => void refresh($, true)} />
         </Box>
@@ -1077,6 +1186,34 @@ export const register: Register = (on, options) => {
           <Text bold color="red">
             {now.error}
           </Text>
+        )}
+        {'Input' in table && (
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2} paddingX={1}>
+            <table.Input
+              key="search"
+              label="Find #"
+              placeholder="card number"
+              value={found.query}
+              submitLabel="find"
+              onSubmit={value => void find($, value)}
+            />
+            {found.query !== '' && (
+              <Button key="clear-search" plain label="Clear" onPress={() => void update($, search, () => NO_SEARCH)} />
+            )}
+          </Box>
+        )}
+        {found.query !== '' && (
+          <Box flexDirection="column" borderStyle="round" borderColor="#808080" paddingX={1}>
+            <Box flexDirection="row" gap={1}>
+              <Text bold>FOUND #{found.query}</Text>
+              <Text dimColor>{found.isLoading ? 'looking…' : found.results.length}</Text>
+            </Box>
+            {found.error !== null && <Text color="#e5484d">{found.error}</Text>}
+            {!found.isLoading && found.error === null && found.results.length === 0 && (
+              <Text dimColor>No task has that number.</Text>
+            )}
+            {found.results.slice(0, TODO_ROWS).map(t => row('found', t, t.project))}
+          </Box>
         )}
         {now.touched.filter(passes).length > 0 && (
           <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>

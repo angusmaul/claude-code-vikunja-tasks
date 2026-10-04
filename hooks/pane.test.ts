@@ -1,12 +1,12 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 const TASK = {
-  id: 774,
-  identifier: '#244',
-  title: 'Build a dashboard',
+  id: 501,
+  identifier: '#42',
+  title: 'Write the release notes',
   priority: 4,
   done: false,
-  project_id: 32,
+  project_id: 3,
   assignees: [{ username: 'claude' }],
   description: '<p>Hello <strong>there</strong></p><ul><li>one</li></ul>',
   created: '2026-10-01T10:00:00+10:00',
@@ -25,22 +25,22 @@ const answer = (url: string): unknown => {
 
   if (path.startsWith('/projects?')) {
     return [
-      { id: 32, title: 'Proxmox', parent_project_id: 0, views: [{ id: 128, view_kind: 'kanban' }] },
-      { id: 13, title: 'Home Improvements/Automation', parent_project_id: 0, views: [] },
-      { id: 14, title: 'Koi Pond', parent_project_id: 13, views: [] },
+      { id: 3, title: 'Atlas', parent_project_id: 0, views: [{ id: 30, view_kind: 'kanban' }] },
+      { id: 8, title: 'Household', parent_project_id: 0, views: [] },
+      { id: 9, title: 'Garden', parent_project_id: 8, views: [] },
     ]
   }
 
   if (path.includes('/buckets')) {
     return [
-      { id: 113, title: 'Doing' },
-      { id: 115, title: 'Blocked' },
-      { id: 112, title: 'To-Do' },
+      { id: 61, title: 'Doing' },
+      { id: 63, title: 'Blocked' },
+      { id: 60, title: 'To-Do' },
     ]
   }
 
   if (path.startsWith('/tasks?')) {
-    if (path.includes('112')) {
+    if (path.includes('60')) {
       return [
         { ...TASK, id: 901, identifier: '#9', title: 'Not started yet' },
         // the mocked clock reads 1,000,000 ms: one of these is past, one is three days out
@@ -49,18 +49,91 @@ const answer = (url: string): unknown => {
       ]
     }
 
-    return path.includes('113') ? [TASK, { ...TASK, id: 900, identifier: '#3', project_id: 14 }] : []
+    return path.includes('61') ? [TASK, { ...TASK, id: 900, identifier: '#3', project_id: 9 }] : []
   }
 
   if (path.endsWith('/comments')) {
-    return [{ author: { username: 'Tim' }, created: TASK.updated, comment: '<p>Looks good</p>' }]
+    return [{ author: { username: 'sam' }, created: TASK.updated, comment: '<p>Looks good</p>' }]
   }
 
   return TASK
 }
 
 for (const surface of ['desktop', 'terminal'] as const) {
-  const options = { webUrl: 'https://tasks.test', folderRoot: 'D:\\', hiddenProjects: 'home improvement' }
+  test(`demo mode never touches the network, disk or host on ${surface}`, async ($, on) => {
+    mock.clock(on, { now: 1_000_000_000_000 })
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    on('command.register', () => ({ value: undefined }) as never)
+    on('ui.open', () => ({ value: { isPlaced: true as const } }))
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('ui.focus', () => ({ value: {} }) as never)
+    // Every way out of the process is counted. Live mode's first read of the
+    // board asks the environment for its settings, so the count is taken once
+    // demo mode is on, and must not have moved by the end.
+    const outside: string[] = []
+    const counted = (name: string, value: unknown) => () => {
+      outside.push(name)
+
+      return { value } as never
+    }
+    on('env.get', counted('env.get', undefined))
+    on('http.fetch', counted('http.fetch', { status: 500, ok: false, headers: {}, text: '' }))
+    on('fs.list', counted('fs.list', []))
+    on('fs.exists', counted('fs.exists', false))
+    on('fs.stat', counted('fs.stat', { kind: 'dir', size: 0, mtimeMs: 0, isLink: false }))
+    on('fs.write', counted('fs.write', undefined))
+    on('process.run', counted('process.run', { exitCode: 0, stdout: '', stderr: '' }))
+    on('tool.call', () => {
+      outside.push('tool.call')
+
+      return { result: 'ok' } as never
+    })
+
+    await $.session.start({ cwd: '.', surface, isInteractive: true })
+    await $.command.run({ command: 'vikunja', args: 'demo' } as never)
+    const before = outside.length
+
+    const ui = await $.ui.mount({
+      plugin: 'vikunja-tasks',
+      surface,
+      component: 'Pane',
+      requestId: 'vikunja-tasks',
+      props: { id: 'vikunja-tasks', title: 'Vikunja', bodyColumns: 60 } as never,
+      viewport: { columns: 60, rows: 40 },
+    })
+
+    expect(await ui.find({ text: 'demo data' })).toBeDefined()
+    expect(await ui.find({ key: 'open-Doing-101' })).toBeDefined()
+    expect(await ui.find({ key: 'open-Doing-115' })).toBeUndefined() // under the hidden tree
+
+    // Find looks a task up by the number on its card, not its internal id.
+    await ui.input({ key: 'search', text: '#42' })
+    expect(await ui.find({ key: 'open-found-101' })).toBeDefined()
+    await ui.input({ key: 'search', text: '101' })
+    expect(await ui.find({ text: 'No task has that number.' })).toBeDefined()
+    await ui.press({ key: 'clear-search' })
+    expect(await ui.find({ text: 'FOUND' })).toBeUndefined()
+
+    await ui.press({ key: 'open-Doing-102' })
+    await ui.select({ key: 'folder', value: '~/code/infra' })
+    await ui.press({ key: 'reload' })
+    await ui.press({ key: 'start-session' })
+    expect(await ui.find({ text: 'Demo: this would offer a session in ~/code/infra' })).toBeDefined()
+    await ui.press({ key: 'open' })
+
+    // A new folder, typed in, is not made on disk either.
+    await ui.select({ key: 'folder', value: '(other)' })
+    await ui.input({ key: 'folder-path', text: 'brand-new' })
+
+    expect(outside.slice(before)).toEqual([])
+
+    // Back in live mode the pane asks the environment for its settings again.
+    await $.command.run({ command: 'vikunja', args: 'live' } as never)
+    expect(outside.slice(before)).toContain('env.get')
+  })
+
+  const options = { webUrl: 'https://tasks.test', folderRoot: 'D:\\', hiddenProjects: 'household' }
 
   test(`draws the lanes and a task on ${surface}`, { options }, async ($, on) => {
     mock.env(on, { OS: 'Windows_NT', VIKUNJA_API_TOKEN: 'tk_test', VIKUNJA_URL: 'http://vikunja.test/api/v1' })
@@ -125,7 +198,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     })
 
     expect(await ui.find({ text: 'DOING' })).toBeDefined()
-    expect(await ui.find({ key: 'open-Doing-774' })).toBeDefined()
+    expect(await ui.find({ key: 'open-Doing-501' })).toBeDefined()
     expect(await ui.find({ key: 'open-To-Do-901' })).toBeDefined()
 
     // The due buttons: overdue, due in the next seven days, and all.
@@ -146,28 +219,28 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.press({ key: 'blocked-show' })
     expect(await ui.find({ type: 'Text', text: 'BLOCKED' })).toBeDefined()
 
-    // A task under the home-improvement tree is left out until asked for.
+    // A task under the hidden tree is left out until asked for.
     expect(await ui.find({ key: 'open-Doing-900' })).toBeUndefined()
     await ui.select({ key: 'filter-project', value: 'everything' })
     expect(await ui.find({ key: 'open-Doing-900' })).toBeDefined()
     await ui.press({ key: 'clear-filters' })
     expect(await ui.find({ key: 'open-Doing-900' })).toBeUndefined()
 
-    await ui.press({ key: 'open-Doing-774' })
+    await ui.press({ key: 'open-Doing-501' })
     await ui.drawn()
     expect(await ui.find({ key: 'back' })).toBeDefined()
     expect(await ui.find({ type: 'Markdown', text: 'Looks good' })).toBeDefined()
 
     // Open is a Button that hands the task's page to the system browser.
     await ui.press({ key: 'open' })
-    expect(ran).toEqual([['rundll32', 'url.dll,FileProtocolHandler', 'https://tasks.test/tasks/774']])
+    expect(ran).toEqual([['rundll32', 'url.dll,FileProtocolHandler', 'https://tasks.test/tasks/501']])
 
     // Picking a folder labels the task; Start session offers one in it.
     expect(await ui.find({ type: 'Select', key: 'folder', text: '$RECYCLE' })).toBeUndefined()
     await ui.select({ key: 'folder', value: 'D:\\here' })
     expect(writes).toEqual([
       'PUT /labels {"title":"folder: D:\\\\here","hex_color":"6b8afd"}',
-      'PUT /tasks/774/labels {"label_id":9}',
+      'PUT /tasks/501/labels {"label_id":9}',
     ])
 
     // A new folder is made under D: and given to the task.
@@ -181,13 +254,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.select({ key: 'folder', value: '(other)' })
     await ui.input({ key: 'folder-path', text: 'fresh' })
     expect(made).toEqual(['D:\\fresh\\.gitkeep'])
-    expect(writes.at(-1)).toBe('PUT /tasks/774/labels {"label_id":9}')
+    expect(writes.at(-1)).toBe('PUT /tasks/501/labels {"label_id":9}')
 
     // Changing folder puts the new label on before taking the old one off.
     TASK.labels = [{ id: 7, title: 'folder: D:\\elsewhere' }]
     await ui.press({ key: 'reload' })
     await ui.select({ key: 'folder', value: 'D:\\here' })
-    expect(writes.slice(-2)).toEqual(['PUT /tasks/774/labels {"label_id":9}', 'DELETE /tasks/774/labels/7 '])
+    expect(writes.slice(-2)).toEqual(['PUT /tasks/501/labels {"label_id":9}', 'DELETE /tasks/501/labels/7 '])
     await ui.press({ key: 'reload' })
     await ui.press({ key: 'start-session' })
     expect(calls.at(-1)).toMatchObject({ tool: 'mcp__ccd_session__spawn_task', cwd: 'D:\\elsewhere' })
@@ -198,12 +271,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // A filter nothing matches empties the lane, and Clear brings it back.
     await ui.select({ key: 'filter-assignee', value: 'nobody' })
-    expect(await ui.find({ key: 'open-Doing-774' })).toBeUndefined()
+    expect(await ui.find({ key: 'open-Doing-501' })).toBeUndefined()
     await ui.press({ key: 'clear-filters' })
-    expect(await ui.find({ key: 'open-Doing-774' })).toBeDefined()
+    expect(await ui.find({ key: 'open-Doing-501' })).toBeDefined()
 
     // A vikunja MCP call naming a task opens it without a press.
-    await $.tool.call({ tool: 'mcp__vikunja__vikunja_tasks', subcommand: 'get', id: 774 } as never)
+    await $.tool.call({ tool: 'mcp__vikunja__vikunja_tasks', subcommand: 'get', id: 501 } as never)
     await ui.drawn()
     expect(await ui.find({ key: 'back' })).toBeDefined()
     expect(await ui.find({ text: 'THIS SESSION' })).toBeUndefined()
