@@ -64,6 +64,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     mock.clock(on, { now: 1_000_000_000_000 })
     on('session.start', (_, e) => ({ cwd: e.cwd }))
     on('command.register', () => ({ value: undefined }) as never)
+    on('session.surfaces', () => ({ value: [surface] }))
     on('ui.open', () => ({ value: { isPlaced: true as const } }))
     on('ui.status', () => ({ value: undefined }) as never)
     on('ui.toast', () => ({ value: undefined }) as never)
@@ -181,6 +182,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       return { result: 'ok' } as never
     })
     on('command.register', () => ({ value: undefined }) as never)
+    on('session.surfaces', () => ({ value: [surface] }))
     on('ui.open', () => ({ value: { isPlaced: true as const } }))
     on('ui.status', () => ({ value: undefined }) as never)
     on('ui.toast', () => ({ value: undefined }) as never)
@@ -282,3 +284,32 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await ui.find({ text: 'THIS SESSION' })).toBeUndefined()
   })
 }
+
+// A scheduled or -p start has nothing to draw on: the pane is not opened
+// (where the open would be refused into the transcript), and opens on the
+// first surface to attach.
+test('waits for a surface before opening the pane', async ($, on) => {
+  mock.clock(on, { now: 1_000_000_000_000 })
+  let surfaces: readonly ('desktop' | 'terminal')[] = []
+  const opened: string[] = []
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.surfaces', () => ({ value: surfaces }))
+  on('command.register', () => ({ value: undefined }) as never)
+  on('ui.open', (_, e) => {
+    opened.push(e.id)
+
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.status', () => ({ value: undefined }) as never)
+  on('ui.toast', () => ({ value: undefined }) as never)
+  on('env.get', () => ({ value: undefined }) as never)
+  on('http.fetch', () => ({ value: { status: 500, ok: false, headers: {}, text: '' } }) as never)
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+
+  await $.session.start({ cwd: '.', isInteractive: false } as never)
+  expect(opened).toEqual([])
+
+  surfaces = ['desktop']
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  expect(opened).toEqual(['vikunja-tasks'])
+})

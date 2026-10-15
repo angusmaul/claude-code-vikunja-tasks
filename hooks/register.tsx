@@ -108,6 +108,22 @@ type Raw = Record<string, any>
 
 let lanes: Lanes | null = null
 let inFlight: Promise<void> | null = null
+// An unasked open that found nothing to draw on (a scheduled or -p start), kept
+// for the first surface that attaches.
+let isOpenPending = false
+
+// Opens the pane unasked. With no surface attached the open is refused with
+// `no-surface` instead of waiting, so it waits here rather than erroring into
+// the transcript.
+const openPane = async ($: EngineInterface) => {
+  if ((await $.session.surfaces()).length === 0) {
+    isOpenPending = true
+    return
+  }
+
+  isOpenPending = false
+  await $.ui.open({ id: PANE, title: TITLE }).catch(() => undefined)
+}
 
 // The status is all a failure reports: an error's own text can echo the
 // request, and the request carries the token.
@@ -552,7 +568,7 @@ const autoOpen = async ($: EngineInterface, id: number) => {
 
   const now = await read($, board)
   const known = [...now.touched, ...now.doing, ...now.blocked, ...(now.todo ?? [])].find(t => t.id === id)
-  void $.ui.open({ id: PANE, title: TITLE })
+  void openPane($)
 
   return show(
     $,
@@ -730,7 +746,7 @@ export const register: Register = (on, options) => {
       description: 'Show the Vikunja tasks in Doing, Blocked and To-Do, and the ones this session touched',
       argumentHint: '[demo|live]',
     })
-    void $.ui.open({ id: PANE, title: TITLE })
+    void openPane($)
     void refresh($)
     $.clock.every(POLL_MS, () => void refresh($))
     $.clock.every(LIVE_MS, async () => {
@@ -742,6 +758,17 @@ export const register: Register = (on, options) => {
     })
 
     return next(e)
+  })
+
+  // The pane a start with nothing attached could not open, on the first surface to attach.
+  on('session.attach', async ($, e, next) => {
+    const joined = await next(e)
+
+    if (isOpenPending) {
+      await openPane($)
+    }
+
+    return joined
   })
 
   on('command.run', { command: 'vikunja' }, async ($, e) => {
